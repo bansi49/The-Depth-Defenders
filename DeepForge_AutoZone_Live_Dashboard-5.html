@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DEEPFORGE — Zone-Based Live Mine Dashboard</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f0e6;color:#153b38;font-family:Arial,Helvetica,sans-serif}
+header{background:#153b38;color:#fff;padding:16px 22px;display:flex;justify-content:space-between;align-items:center}
+header h1{margin:0;font-size:22px}.live{background:#dff3e7;color:#17633b;padding:7px 12px;border-radius:18px;font-weight:700}
+.wrap{max-width:1180px;margin:auto;padding:18px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.card{background:#fff;border-radius:14px;padding:15px;box-shadow:0 2px 10px #0001}.label{font-size:12px;color:#667}.value{font-size:25px;font-weight:700;margin-top:6px}
+.safe{color:#198754}.warn{color:#b27a00}.danger{color:#c0392b}
+.main{display:grid;grid-template-columns:1.35fr .8fr;gap:14px;margin-top:14px}
+.map{height:390px;background:#e7e1d5;border-radius:12px;position:relative;overflow:hidden;border:1px solid #d6cfbf}
+.tunnel{position:absolute;left:5%;right:5%;top:54%;height:22px;background:#807768;border-radius:20px}
+.branch{position:absolute;width:16px;background:#807768;border-radius:15px}.b1{height:140px;left:28%;top:18%}.b2{height:125px;left:68%;top:54%}.b3{height:95px;left:48%;top:54%;transform:rotate(90deg)}
+.zone{position:absolute;padding:8px 11px;border-radius:9px;background:#ffffffcc;font-weight:700;font-size:12px;border:2px solid #bbb}
+.za{left:8%;top:60%}.zb{left:31%;top:60%}.zc{left:59%;top:60%}.zd{left:80%;top:60%}
+.rover{position:absolute;width:86px;text-align:center;padding:7px 5px;background:#153b38;color:#fff;border-radius:9px;font-size:12px;font-weight:700;cursor:grab;user-select:none;box-shadow:0 3px 8px #0004}
+.rover:active{cursor:grabbing}.worker{position:absolute;left:62%;top:29%;background:#b27a00;color:#fff;padding:7px;border-radius:8px;font-size:11px;display:none}
+.legend{display:flex;gap:14px;margin-top:9px;font-size:12px}.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px}
+.row{display:flex;justify-content:space-between;padding:11px 0;border-bottom:1px solid #eee}.row:last-child{border:0}
+.alert{margin-top:12px;padding:13px;border-radius:9px;border-left:5px solid #198754;background:#edf8f1}.alert.d{border-color:#c0392b;background:#fff0ed}.alert.w{border-color:#b27a00;background:#fff8df}
+.note{margin-top:14px;font-size:13px;color:#586}.statuspill{padding:4px 8px;border-radius:12px;background:#edf8f1}
+@media(max-width:800px){.grid{grid-template-columns:repeat(2,1fr)}.main{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header><h1>THE DEPTH DEFENDERS | LIVE MINE MONITOR</h1><div class="live">● LIVE SIMULATION</div></header>
+<div class="wrap">
+<div class="grid">
+<div class="card"><div class="label">CH₄ GAS CONCENTRATION</div><div class="value safe" id="gas">0.32 %</div><div><b id="gasPercent">16%</b> of demo danger threshold · <span id="gasText">SAFE</span></div></div>
+<div class="card"><div class="label">TEMPERATURE</div><div class="value safe" id="temp">30.8 °C</div><div><b id="tempPercent">31%</b> of demo danger threshold · <span id="tempText">NORMAL</span></div></div>
+<div class="card"><div class="label">HUMIDITY</div><div class="value safe" id="hum">68 %</div><div><b id="humPercent">68%</b> relative humidity · <span id="humText">SAFE</span></div></div>
+<div class="card"><div class="label">OVERALL RISK</div><div class="value safe" id="risk">LOW</div><div><b id="riskPercent">16%</b> risk score · <span id="zone">ZONE A</span></div></div>
+</div>
+
+<div class="main">
+<div class="card">
+<h2>Drag the Rover — Data Changes Automatically</h2>
+<div class="map" id="map">
+<div class="tunnel"></div><div class="branch b1"></div><div class="branch b2"></div>
+<div class="zone za">ZONE A · SAFE</div><div class="zone zb">ZONE B · GAS</div><div class="zone zc">ZONE C · RESCUE</div><div class="zone zd">ZONE D · BLOCKED</div>
+<div class="worker" id="worker">WORKER DETECTED</div>
+<div class="rover" id="rover">🤖 R-01</div>
+</div>
+<div class="legend">
+<span><i class="dot" style="background:#198754"></i>Safe</span>
+<span><i class="dot" style="background:#b27a00"></i>Warning</span>
+<span><i class="dot" style="background:#c0392b"></i>Danger</span>
+</div>
+<div class="note"><b>Demo:</b> Percentages are normalized prototype risk indicators; real mine deployment must use calibrated, certified sensor thresholds. Move only the rover. All dashboard readings, alerts and status are automatically selected from the zone where the rover is placed.</div>
+</div>
+
+<div class="card">
+<h2>Live Zone Status</h2>
+<div class="row"><span>Current Zone</span><b id="zone2">ZONE A</b></div>
+<div class="row"><span>Gas Status</span><b id="gasStatus" class="safe">SAFE · 16%</b></div>
+<div class="row"><span>Obstacle</span><b id="obstacle">CLEAR</b></div>
+<div class="row"><span>Thermal / Worker</span><b id="workerStatus" class="safe">NO</b></div>
+<div class="row"><span>Communication</span><b id="comm" class="safe">CONNECTED</b></div>
+<div class="row"><span>Rover Mode</span><b>MANUAL</b></div>
+<div class="row"><span>Battery</span><b id="battery">86 %</b></div>
+<div class="alert" id="alert"><b>ZONE A:</b> Safe operating conditions.</div>
+</div>
+</div>
+</div>
+
+<script>
+const map=document.getElementById('map'), rover=document.getElementById('rover');
+let dragging=false, battery=86, lastZone='A';
+
+const zones={
+ A:{gas:'0.32 %',gasPct:16,temp:'30.8 °C',tempPct:31,hum:'68 %',humPct:68,risk:'LOW',riskPct:16,cls:'safe',gasS:'SAFE',obs:'CLEAR',worker:'NO',comm:'CONNECTED',msg:'ZONE A: Safe operating conditions.'},
+ B:{gas:'1.18 %',gasPct:59,temp:'34.6 °C',tempPct:69,hum:'76 %',humPct:76,risk:'HIGH',riskPct:78,cls:'danger',gasS:'HIGH',obs:'CLEAR',worker:'NO',comm:'CONNECTED',msg:'ZONE B: Gas concentration is high — avoid entry.'},
+ C:{gas:'0.46 %',gasPct:23,temp:'32.1 °C',tempPct:42,hum:'74 %',humPct:74,risk:'MEDIUM',riskPct:52,cls:'warn',gasS:'SAFE',obs:'CLEAR',worker:'YES',comm:'CONNECTED',msg:'ZONE C: Possible worker detected — rescue support required.'},
+ D:{gas:'0.72 %',gasPct:36,temp:'35.4 °C',tempPct:71,hum:'81 %',humPct:81,risk:'CRITICAL',riskPct:92,cls:'danger',gasS:'WARNING',obs:'BLOCKED',worker:'NO',comm:'WEAK',msg:'ZONE D: Tunnel blocked / unsafe terrain — stop rover.'}
+};
+
+function center(id){let r=document.getElementById(id).getBoundingClientRect(),m=map.getBoundingClientRect();return {x:r.left-m.left+r.width/2,y:r.top-m.top+r.height/2};}
+function zoneFromPosition(){
+ const r=rover.getBoundingClientRect(),m=map.getBoundingClientRect();
+ const x=r.left-m.left+r.width/2, y=r.top-m.top+r.height/2;
+ // Zones are broad vertical regions so movement is intuitive.
+ if(x < m.width*.28) return 'A';
+ if(x < m.width*.56) return 'B';
+ if(x < m.width*.78) return 'C';
+ return 'D';
+}
+function applyZone(z){
+ const d=zones[z]; lastZone=z;
+ document.getElementById('gas').textContent=d.gas;
+ document.getElementById('gasPercent').textContent=d.gasPct+'%';
+ document.getElementById('temp').textContent=d.temp;
+ document.getElementById('tempPercent').textContent=d.tempPct+'%';
+ document.getElementById('hum').textContent=d.hum;
+ document.getElementById('humPercent').textContent=d.humPct+'%';
+ document.getElementById('risk').textContent=d.risk;
+ document.getElementById('riskPercent').textContent=d.riskPct+'%';
+ document.getElementById('gasText').textContent=d.gasS;
+ document.getElementById('tempText').textContent=d.tempPct>=70?'HIGH':d.tempPct>=55?'MONITOR':'NORMAL';
+ document.getElementById('humText').textContent=d.humPct>=80?'HIGH':d.humPct>=70?'MONITOR':'SAFE';
+ ['risk','gasStatus','workerStatus','comm'].forEach(id=>{let e=document.getElementById(id);e.className=d.cls});
+ document.getElementById('gasStatus').textContent=d.gasS+' · '+d.gasPct+'%';
+ document.getElementById('obstacle').textContent=d.obs;
+ document.getElementById('workerStatus').textContent=d.worker;
+ document.getElementById('comm').textContent=d.comm;
+ document.getElementById('zone').textContent='ZONE '+z;
+ document.getElementById('zone2').textContent='ZONE '+z;
+ const a=document.getElementById('alert');a.className='alert '+(d.cls==='danger'?'d':d.cls==='warn'?'w':'');a.innerHTML='<b>'+d.msg+'</b>';
+ document.getElementById('worker').style.display=d.worker==='YES'?'block':'none';
+}
+function place(clientX,clientY){
+ const m=map.getBoundingClientRect(), rw=rover.offsetWidth, rh=rover.offsetHeight;
+ let x=clientX-m.left-rw/2, y=clientY-m.top-rh/2;
+ x=Math.max(0,Math.min(m.width-rw,x));y=Math.max(0,Math.min(m.height-rh,y));
+ rover.style.left=x+'px';rover.style.top=y+'px';
+ const z=zoneFromPosition(); if(z!==lastZone) applyZone(z);
+ battery=Math.max(0,battery-0.01);document.getElementById('battery').textContent=battery.toFixed(0)+' %';
+}
+rover.addEventListener('mousedown',e=>{dragging=true;e.preventDefault()});
+document.addEventListener('mouseup',()=>dragging=false);
+document.addEventListener('mousemove',e=>{if(dragging)place(e.clientX,e.clientY)});
+rover.addEventListener('touchstart',e=>{dragging=true;e.preventDefault()},{passive:false});
+document.addEventListener('touchend',()=>dragging=false);
+document.addEventListener('touchmove',e=>{if(dragging){let t=e.touches[0];place(t.clientX,t.clientY)}},{passive:false});
+map.addEventListener('click',e=>{if(e.target!==rover)place(e.clientX,e.clientY)});
+applyZone('A');
+</script>
+</body>
+</html>
