@@ -1,132 +1,1372 @@
-<!doctype html>
-<html lang="en">
+#include <WiFi.h>
+#include <WebServer.h>
+#include <DHT.h>
+#include <Wire.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+
+// =====================================================
+//                  ROBORESQ
+//       AI-POWERED MINE SAFETY & RESCUE ROVER
+// =====================================================
+
+// =====================================================
+// WIFI
+// =====================================================
+
+const char* ssid = "Mahadev";
+const char* password = "12345678";
+
+WebServer server(80);
+
+// =====================================================
+// LAPTOP CAMERA
+// =====================================================
+
+const char* CAMERA_URL = "http://10.51.188.31:5000/video";
+
+// =====================================================
+// SENSOR PINS
+// =====================================================
+
+// MQ-7
+#define MQ7_PIN 34
+
+// DHT11
+#define DHT_PIN 27
+#define DHT_TYPE DHT11
+
+// HC-SR04
+#define TRIG_PIN 32
+#define ECHO_PIN 33
+
+// Water / Soil Sensor
+#define SOIL_PIN 39
+
+// IR Sensor
+#define IR_PIN 35
+
+// Relay
+#define RELAY_PIN 14
+
+// Buzzer
+#define BUZZER_PIN 13
+
+// LEDs
+#define RED_LED 16
+#define GREEN_LED 17
+
+// =====================================================
+// L298N MOTOR DRIVER
+// =====================================================
+
+#define IN1 4
+#define IN2 5
+#define IN3 18
+#define IN4 19
+
+#define ENA 25
+#define ENB 26
+
+// =====================================================
+// OBJECTS
+// =====================================================
+
+DHT dht(DHT_PIN, DHT_TYPE);
+Adafruit_MPU6050 mpu;
+
+// =====================================================
+// VARIABLES
+// =====================================================
+
+float temperature = 0.0;
+float humidity = 0.0;
+float distance = -1.0;
+
+float soilPercent = 0.0;
+float gasPercent = 0.0;
+
+float accelX = 0.0;
+float accelY = 0.0;
+float accelZ = 0.0;
+
+bool irDetected = false;
+bool relayState = false;
+bool buzzerState = false;
+bool dangerState = false;
+bool mpuConnected = false;
+
+String roverStatus = "STOPPED";
+
+unsigned long lastSensorRead = 0;
+unsigned long lastBeepTime = 0;
+
+bool beepOn = false;
+
+// =====================================================
+// ULTRASONIC DISTANCE
+// =====================================================
+
+float getDistance()
+{
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+
+  digitalWrite(TRIG_PIN, LOW);
+
+  long duration = pulseIn(ECHO_PIN, HIGH, 30000);
+
+  if (duration == 0)
+  {
+    return -1;
+  }
+
+  float d = duration * 0.0343 / 2.0;
+
+  if (d < 2 || d > 400)
+  {
+    return -1;
+  }
+
+  return d;
+}
+
+// =====================================================
+// READ ALL SENSORS
+// =====================================================
+
+void readSensors()
+{
+  // ---------------------------------------------------
+  // DHT11
+  // ---------------------------------------------------
+
+  float t = dht.readTemperature();
+  float h = dht.readHumidity();
+
+  if (!isnan(t))
+  {
+    temperature = t;
+  }
+
+  if (!isnan(h))
+  {
+    humidity = h;
+  }
+
+  // ---------------------------------------------------
+  // MQ-7
+  // ---------------------------------------------------
+
+  int gasRaw = analogRead(MQ7_PIN);
+
+  gasPercent = map(
+    gasRaw,
+    0,
+    4095,
+    0,
+    100
+  );
+
+  gasPercent = constrain(
+    gasPercent,
+    0,
+    100
+  );
+
+  // ---------------------------------------------------
+  // WATER / SOIL SENSOR
+  // ---------------------------------------------------
+
+  int soilRaw = analogRead(SOIL_PIN);
+
+  soilPercent = map(
+    soilRaw,
+    4095,
+    1500,
+    0,
+    100
+  );
+
+  soilPercent = constrain(
+    soilPercent,
+    0,
+    100
+  );
+
+  // ---------------------------------------------------
+  // IR SENSOR
+  // ---------------------------------------------------
+
+  int irValue = digitalRead(IR_PIN);
+
+  irDetected = (irValue == LOW);
+
+  // ---------------------------------------------------
+  // ULTRASONIC
+  // ---------------------------------------------------
+
+  distance = getDistance();
+
+  // ---------------------------------------------------
+  // MPU6050
+  // ---------------------------------------------------
+
+  if (mpuConnected)
+  {
+    sensors_event_t a;
+    sensors_event_t g;
+    sensors_event_t tempEvent;
+
+    mpu.getEvent(
+      &a,
+      &g,
+      &tempEvent
+    );
+
+    accelX = a.acceleration.x;
+    accelY = a.acceleration.y;
+    accelZ = a.acceleration.z;
+  }
+}
+
+// =====================================================
+// SAFETY SYSTEM
+// =====================================================
+
+void checkSafety()
+{
+  bool danger = false;
+
+  // Gas danger
+  if (gasPercent >= 50)
+  {
+    danger = true;
+  }
+
+  // Obstacle danger
+  if (distance > 0 && distance < 50)
+  {
+    danger = true;
+  }
+
+  dangerState = danger;
+
+  // ---------------------------------------------------
+  // DANGER
+  // ---------------------------------------------------
+
+  if (danger)
+  {
+    digitalWrite(
+      RED_LED,
+      HIGH
+    );
+
+    digitalWrite(
+      GREEN_LED,
+      LOW
+    );
+
+    buzzerState = true;
+
+    if (
+      millis() - lastBeepTime >= 300
+    )
+    {
+      lastBeepTime = millis();
+
+      beepOn = !beepOn;
+
+      if (beepOn)
+      {
+        tone(
+          BUZZER_PIN,
+          2000
+        );
+      }
+      else
+      {
+        noTone(
+          BUZZER_PIN
+        );
+      }
+    }
+  }
+
+  // ---------------------------------------------------
+  // SAFE
+  // ---------------------------------------------------
+
+  else
+  {
+    noTone(BUZZER_PIN);
+
+    beepOn = false;
+
+    buzzerState = false;
+
+    digitalWrite(
+      RED_LED,
+      LOW
+    );
+
+    digitalWrite(
+      GREEN_LED,
+      HIGH
+    );
+  }
+}
+
+// =====================================================
+// MOTOR CONTROL
+// =====================================================
+
+void stopMotors()
+{
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, LOW);
+
+  ledcWrite(ENA, 0);
+  ledcWrite(ENB, 0);
+
+  roverStatus = "STOPPED";
+}
+
+// -----------------------------------------------------
+
+void moveForward()
+{
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
+
+  ledcWrite(ENA, 180);
+  ledcWrite(ENB, 180);
+
+  roverStatus = "FORWARD";
+}
+
+// -----------------------------------------------------
+
+void moveBackward()
+{
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
+
+  ledcWrite(ENA, 180);
+  ledcWrite(ENB, 180);
+
+  roverStatus = "BACKWARD";
+}
+
+// -----------------------------------------------------
+
+void turnLeft()
+{
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
+
+  ledcWrite(ENA, 180);
+  ledcWrite(ENB, 180);
+
+  roverStatus = "LEFT";
+}
+
+// -----------------------------------------------------
+
+void turnRight()
+{
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
+
+  ledcWrite(ENA, 180);
+  ledcWrite(ENB, 180);
+
+  roverStatus = "RIGHT";
+}
+
+// =====================================================
+// RELAY
+// =====================================================
+
+void toggleRelay()
+{
+  relayState = !relayState;
+
+  digitalWrite(
+    RELAY_PIN,
+    relayState ? HIGH : LOW
+  );
+}
+
+// =====================================================
+// JSON API
+// =====================================================
+
+void handleAPI()
+{
+  readSensors();
+  checkSafety();
+
+  String json = "{";
+
+  json += "\"temperature\":";
+  json += String(temperature, 1);
+
+  json += ",";
+
+  json += "\"humidity\":";
+  json += String(humidity, 1);
+
+  json += ",";
+
+  json += "\"gas\":";
+  json += String(gasPercent, 0);
+
+  json += ",";
+
+  json += "\"distance\":";
+  json += String(distance, 1);
+
+  json += ",";
+
+  json += "\"water\":";
+  json += String(soilPercent, 0);
+
+  json += ",";
+
+  json += "\"ir\":";
+  json += irDetected ? "true" : "false";
+
+  json += ",";
+
+  json += "\"accelX\":";
+  json += String(accelX, 2);
+
+  json += ",";
+
+  json += "\"accelY\":";
+  json += String(accelY, 2);
+
+  json += ",";
+
+  json += "\"accelZ\":";
+  json += String(accelZ, 2);
+
+  json += ",";
+
+  json += "\"relay\":";
+  json += relayState ? "true" : "false";
+
+  json += ",";
+
+  json += "\"buzzer\":";
+  json += buzzerState ? "true" : "false";
+
+  json += ",";
+
+  json += "\"danger\":";
+  json += dangerState ? "true" : "false";
+
+  json += ",";
+
+  json += "\"rover\":\"";
+  json += roverStatus;
+  json += "\"";
+
+  json += "}";
+
+  server.send(
+    200,
+    "application/json",
+    json
+  );
+}
+
+// =====================================================
+// WEBPAGE
+// =====================================================
+
+String webpage()
+{
+  String html = R"rawliteral(
+
+<!DOCTYPE html>
+
+<html>
+
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DEEPFORGE — Zone-Based Live Mine Dashboard</title>
+
+<meta charset="UTF-8">
+
+<meta name="viewport"
+content="width=device-width, initial-scale=1.0">
+
+<title>RoboResQ</title>
+
 <style>
-*{box-sizing:border-box}body{margin:0;background:#f5f0e6;color:#153b38;font-family:Arial,Helvetica,sans-serif}
-header{background:#153b38;color:#fff;padding:16px 22px;display:flex;justify-content:space-between;align-items:center}
-header h1{margin:0;font-size:22px}.live{background:#dff3e7;color:#17633b;padding:7px 12px;border-radius:18px;font-weight:700}
-.wrap{max-width:1180px;margin:auto;padding:18px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
-.card{background:#fff;border-radius:14px;padding:15px;box-shadow:0 2px 10px #0001}.label{font-size:12px;color:#667}.value{font-size:25px;font-weight:700;margin-top:6px}
-.safe{color:#198754}.warn{color:#b27a00}.danger{color:#c0392b}
-.main{display:grid;grid-template-columns:1.35fr .8fr;gap:14px;margin-top:14px}
-.map{height:390px;background:#e7e1d5;border-radius:12px;position:relative;overflow:hidden;border:1px solid #d6cfbf}
-.tunnel{position:absolute;left:5%;right:5%;top:54%;height:22px;background:#807768;border-radius:20px}
-.branch{position:absolute;width:16px;background:#807768;border-radius:15px}.b1{height:140px;left:28%;top:18%}.b2{height:125px;left:68%;top:54%}.b3{height:95px;left:48%;top:54%;transform:rotate(90deg)}
-.zone{position:absolute;padding:8px 11px;border-radius:9px;background:#ffffffcc;font-weight:700;font-size:12px;border:2px solid #bbb}
-.za{left:8%;top:60%}.zb{left:31%;top:60%}.zc{left:59%;top:60%}.zd{left:80%;top:60%}
-.rover{position:absolute;width:86px;text-align:center;padding:7px 5px;background:#153b38;color:#fff;border-radius:9px;font-size:12px;font-weight:700;cursor:grab;user-select:none;box-shadow:0 3px 8px #0004}
-.rover:active{cursor:grabbing}.worker{position:absolute;left:62%;top:29%;background:#b27a00;color:#fff;padding:7px;border-radius:8px;font-size:11px;display:none}
-.legend{display:flex;gap:14px;margin-top:9px;font-size:12px}.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px}
-.row{display:flex;justify-content:space-between;padding:11px 0;border-bottom:1px solid #eee}.row:last-child{border:0}
-.alert{margin-top:12px;padding:13px;border-radius:9px;border-left:5px solid #198754;background:#edf8f1}.alert.d{border-color:#c0392b;background:#fff0ed}.alert.w{border-color:#b27a00;background:#fff8df}
-.note{margin-top:14px;font-size:13px;color:#586}.statuspill{padding:4px 8px;border-radius:12px;background:#edf8f1}
-@media(max-width:800px){.grid{grid-template-columns:repeat(2,1fr)}.main{grid-template-columns:1fr}}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: Arial, Helvetica, sans-serif;
+  background: #050d18;
+  color: #eaf3ff;
+}
+
+.header {
+  background: linear-gradient(
+    135deg,
+    #091727,
+    #0d1e33
+  );
+
+  border-bottom: 1px solid #203b5c;
+
+  padding: 20px 30px;
+
+  display: flex;
+
+  align-items: center;
+
+  justify-content: space-between;
+
+  gap: 20px;
+
+  flex-wrap: wrap;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+}
+
+.logo {
+  font-size: 30px;
+  font-weight: bold;
+}
+
+.logo span {
+  color: #4ba3ff;
+}
+
+.tagline {
+  margin-top: 5px;
+  color: #89a5c4;
+  font-size: 14px;
+}
+
+.system-online {
+  padding: 10px 16px;
+  border-radius: 30px;
+  background: #09251d;
+  border: 1px solid #1e6b50;
+  color: #41e99a;
+  font-weight: bold;
+  font-size: 13px;
+}
+
+.container {
+  width: 100%;
+  max-width: 1450px;
+  margin: auto;
+  padding: 25px;
+}
+
+.section-title {
+  margin: 20px 0 14px;
+  font-size: 20px;
+  font-weight: bold;
+  color: #b8d8ff;
+}
+
+/* CAMERA */
+
+.camera-card {
+  background: #091525;
+  border: 1px solid #23415f;
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+.camera-top {
+  padding: 18px 20px;
+
+  display: flex;
+
+  justify-content: space-between;
+
+  align-items: center;
+
+  border-bottom: 1px solid #203750;
+}
+
+.camera-title {
+  font-size: 18px;
+  font-weight: bold;
+}
+
+.live {
+  color: #45ef9c;
+  background: #09251d;
+  border: 1px solid #1e6b50;
+  padding: 7px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: bold;
+}
+
+.camera-screen {
+  background: #01060d;
+  min-height: 400px;
+
+  display: flex;
+
+  align-items: center;
+
+  justify-content: center;
+
+  position: relative;
+}
+
+.camera-feed {
+  width: 100%;
+  height: auto;
+  max-height: 600px;
+  object-fit: contain;
+  display: block;
+}
+
+.camera-error {
+  display: none;
+  text-align: center;
+  color: #7f98b3;
+  padding: 30px;
+}
+
+.camera-error-title {
+  font-size: 20px;
+  color: #a9bfd8;
+  margin-top: 10px;
+}
+
+.camera-error-text {
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+.camera-info {
+  padding: 15px;
+
+  display: grid;
+
+  grid-template-columns:
+  repeat(
+    auto-fit,
+    minmax(180px, 1fr)
+  );
+
+  gap: 10px;
+}
+
+.info-box {
+  background: #07111f;
+  border: 1px solid #1e3852;
+  border-radius: 10px;
+  padding: 12px;
+  color: #8da8c4;
+  font-size: 13px;
+}
+
+.info-box strong {
+  display: block;
+  margin-top: 5px;
+  color: #f1f7ff;
+  font-size: 15px;
+}
+
+.connected {
+  color: #42e99a !important;
+}
+
+/* SENSOR GRID */
+
+.sensor-grid {
+  display: grid;
+
+  grid-template-columns:
+  repeat(
+    auto-fit,
+    minmax(210px, 1fr)
+  );
+
+  gap: 15px;
+}
+
+.card {
+  background: #091525;
+  border: 1px solid #213d5a;
+  border-radius: 14px;
+  padding: 19px;
+}
+
+.card-title {
+  color: #8eafd0;
+  font-size: 14px;
+  font-weight: bold;
+  margin-bottom: 10px;
+}
+
+.value {
+  color: #ffffff;
+  font-size: 28px;
+  font-weight: bold;
+  margin: 8px 0;
+}
+
+.card-status {
+  color: #6f89a5;
+  font-size: 13px;
+}
+
+.safe {
+  color: #42e99a !important;
+}
+
+.warning {
+  color: #ffbf5b !important;
+}
+
+.danger {
+  color: #ff5968 !important;
+}
+
+/* ALERT */
+
+.alert-card {
+  margin-top: 15px;
+  padding: 20px;
+  border-radius: 14px;
+  font-size: 16px;
+  font-weight: bold;
+  background: #08261d;
+  border: 1px solid #1c7555;
+  color: #42e99a;
+}
+
+.alert-danger {
+  background: #2b0b12;
+  border-color: #a52d3b;
+  color: #ff6976;
+}
+
+/* CONTROL */
+
+.control-card {
+  background: #091525;
+  border: 1px solid #213d5a;
+  border-radius: 16px;
+  padding: 25px;
+  text-align: center;
+}
+
+.controls {
+  display: grid;
+
+  grid-template-columns:
+  repeat(3, 100px);
+
+  gap: 10px;
+
+  justify-content: center;
+
+  margin-top: 15px;
+}
+
+button {
+  border: 0;
+  border-radius: 11px;
+  padding: 15px 8px;
+  background: #1769c2;
+  color: white;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #2180e5;
+}
+
+.stop {
+  background: #c73545;
+}
+
+.stop:hover {
+  background: #e44756;
+}
+
+.relay-btn {
+  margin-top: 15px;
+  background: #6645ad;
+  min-width: 150px;
+}
+
+/* SYSTEM */
+
+.system-grid {
+  display: grid;
+
+  grid-template-columns:
+  repeat(
+    auto-fit,
+    minmax(180px, 1fr)
+  );
+
+  gap: 12px;
+}
+
+.system-item {
+  background: #081322;
+  border: 1px solid #1e3852;
+  border-radius: 11px;
+  padding: 15px;
+  color: #7894b0;
+  font-size: 13px;
+}
+
+.system-item strong {
+  display: block;
+  margin-top: 6px;
+  color: #ffffff;
+  font-size: 15px;
+}
+
+.footer {
+  text-align: center;
+  padding: 25px;
+  margin-top: 20px;
+  border-top: 1px solid #1b334d;
+  color: #607a96;
+  font-size: 13px;
+}
+
+@media(max-width:600px) {
+
+  .header {
+    padding: 16px;
+  }
+
+  .container {
+    padding: 14px;
+  }
+
+  .logo {
+    font-size: 25px;
+  }
+
+  .camera-screen {
+    min-height: 250px;
+  }
+
+  .controls {
+    grid-template-columns:
+    repeat(3, 85px);
+  }
+
+}
+
 </style>
+
 </head>
+
 <body>
-<header><h1>THE DEPTH DEFENDERS | LIVE MINE MONITOR</h1><div class="live">● LIVE SIMULATION</div></header>
-<div class="wrap">
-<div class="grid">
-<div class="card"><div class="label">CH₄ GAS CONCENTRATION</div><div class="value safe" id="gas">0.32 %</div><div><b id="gasPercent">16%</b> of demo danger threshold · <span id="gasText">SAFE</span></div></div>
-<div class="card"><div class="label">TEMPERATURE</div><div class="value safe" id="temp">30.8 °C</div><div><b id="tempPercent">31%</b> of demo danger threshold · <span id="tempText">NORMAL</span></div></div>
-<div class="card"><div class="label">HUMIDITY</div><div class="value safe" id="hum">68 %</div><div><b id="humPercent">68%</b> relative humidity · <span id="humText">SAFE</span></div></div>
-<div class="card"><div class="label">OVERALL RISK</div><div class="value safe" id="risk">LOW</div><div><b id="riskPercent">16%</b> risk score · <span id="zone">ZONE A</span></div></div>
+
+<!-- HEADER -->
+
+<div class="header">
+
+  <div class="brand">
+
+    <div>
+
+      <div class="logo">
+        Robo<span>ResQ</span>
+      </div>
+
+      <div class="tagline">
+        AI-Powered Mine Safety & Rescue Rover
+      </div>
+
+    </div>
+
+  </div>
+
+  <div class="system-online">
+    SYSTEM ONLINE
+  </div>
+
 </div>
 
-<div class="main">
-<div class="card">
-<h2>Drag the Rover — Data Changes Automatically</h2>
-<div class="map" id="map">
-<div class="tunnel"></div><div class="branch b1"></div><div class="branch b2"></div>
-<div class="zone za">ZONE A · SAFE</div><div class="zone zb">ZONE B · GAS</div><div class="zone zc">ZONE C · RESCUE</div><div class="zone zd">ZONE D · BLOCKED</div>
-<div class="worker" id="worker">WORKER DETECTED</div>
-<div class="rover" id="rover">🤖 R-01</div>
-</div>
-<div class="legend">
-<span><i class="dot" style="background:#198754"></i>Safe</span>
-<span><i class="dot" style="background:#b27a00"></i>Warning</span>
-<span><i class="dot" style="background:#c0392b"></i>Danger</span>
-</div>
-<div class="note"><b>Demo:</b> Percentages are normalized prototype risk indicators; real mine deployment must use calibrated, certified sensor thresholds. Move only the rover. All dashboard readings, alerts and status are automatically selected from the zone where the rover is placed.</div>
+<div class="container">
+
+<!-- ================================================= -->
+<!-- LIVE CAMERA -->
+<!-- ================================================= -->
+
+<div class="section-title">
+Live Camera Monitoring
 </div>
 
-<div class="card">
-<h2>Live Zone Status</h2>
-<div class="row"><span>Current Zone</span><b id="zone2">ZONE A</b></div>
-<div class="row"><span>Gas Status</span><b id="gasStatus" class="safe">SAFE · 16%</b></div>
-<div class="row"><span>Obstacle</span><b id="obstacle">CLEAR</b></div>
-<div class="row"><span>Thermal / Worker</span><b id="workerStatus" class="safe">NO</b></div>
-<div class="row"><span>Communication</span><b id="comm" class="safe">CONNECTED</b></div>
-<div class="row"><span>Rover Mode</span><b>MANUAL</b></div>
-<div class="row"><span>Battery</span><b id="battery">86 %</b></div>
-<div class="alert" id="alert"><b>ZONE A:</b> Safe operating conditions.</div>
-</div>
-</div>
+<div class="camera-card">
+
+  <div class="camera-top">
+
+    <div class="camera-title">
+      Rover Camera Feed
+    </div>
+
+    <div class="live">
+      LIVE
+    </div>
+
+  </div>
+
+  <div class="camera-screen">
+
+    <img
+      src="http://10.51.188.31:5000/video"
+      class="camera-feed"
+      id="cameraFeed"
+      alt="Live Rover Camera"
+      onerror="cameraError();"
+    >
+
+    <div
+      id="cameraError"
+      class="camera-error"
+    >
+
+      <div class="camera-error-title">
+        Camera Feed Unavailable
+      </div>
+
+      <div class="camera-error-text">
+        Make sure camera_server.py is running on the camera laptop at 10.51.188.31:5000
+      </div>
+
+    </div>
+
+  </div>
+
+  <div class="camera-info">
+
+    <div class="info-box">
+      Camera Source
+      <strong>Laptop Camera</strong>
+    </div>
+
+    <div class="info-box">
+      Camera Server
+      <strong>10.51.188.31:5000</strong>
+    </div>
+
+    <div class="info-box">
+      Processing Unit
+      <strong>Raspberry Pi 5</strong>
+    </div>
+
+    <div class="info-box">
+      Computer Vision
+      <strong>OpenCV</strong>
+    </div>
+
+  </div>
+
 </div>
 
-<script>
-const map=document.getElementById('map'), rover=document.getElementById('rover');
-let dragging=false, battery=86, lastZone='A';
+<!-- ================================================= -->
+<!-- SENSOR MONITORING -->
+<!-- ================================================= -->
 
-const zones={
- A:{gas:'0.32 %',gasPct:16,temp:'30.8 °C',tempPct:31,hum:'68 %',humPct:68,risk:'LOW',riskPct:16,cls:'safe',gasS:'SAFE',obs:'CLEAR',worker:'NO',comm:'CONNECTED',msg:'ZONE A: Safe operating conditions.'},
- B:{gas:'1.18 %',gasPct:59,temp:'34.6 °C',tempPct:69,hum:'76 %',humPct:76,risk:'HIGH',riskPct:78,cls:'danger',gasS:'HIGH',obs:'CLEAR',worker:'NO',comm:'CONNECTED',msg:'ZONE B: Gas concentration is high — avoid entry.'},
- C:{gas:'0.46 %',gasPct:23,temp:'32.1 °C',tempPct:42,hum:'74 %',humPct:74,risk:'MEDIUM',riskPct:52,cls:'warn',gasS:'SAFE',obs:'CLEAR',worker:'YES',comm:'CONNECTED',msg:'ZONE C: Possible worker detected — rescue support required.'},
- D:{gas:'0.72 %',gasPct:36,temp:'35.4 °C',tempPct:71,hum:'81 %',humPct:81,risk:'CRITICAL',riskPct:92,cls:'danger',gasS:'WARNING',obs:'BLOCKED',worker:'NO',comm:'WEAK',msg:'ZONE D: Tunnel blocked / unsafe terrain — stop rover.'}
-};
+<div class="section-title">
+Live Sensor Monitoring
+</div>
 
-function center(id){let r=document.getElementById(id).getBoundingClientRect(),m=map.getBoundingClientRect();return {x:r.left-m.left+r.width/2,y:r.top-m.top+r.height/2};}
-function zoneFromPosition(){
- const r=rover.getBoundingClientRect(),m=map.getBoundingClientRect();
- const x=r.left-m.left+r.width/2, y=r.top-m.top+r.height/2;
- // Zones are broad vertical regions so movement is intuitive.
- if(x < m.width*.28) return 'A';
- if(x < m.width*.56) return 'B';
- if(x < m.width*.78) return 'C';
- return 'D';
-}
-function applyZone(z){
- const d=zones[z]; lastZone=z;
- document.getElementById('gas').textContent=d.gas;
- document.getElementById('gasPercent').textContent=d.gasPct+'%';
- document.getElementById('temp').textContent=d.temp;
- document.getElementById('tempPercent').textContent=d.tempPct+'%';
- document.getElementById('hum').textContent=d.hum;
- document.getElementById('humPercent').textContent=d.humPct+'%';
- document.getElementById('risk').textContent=d.risk;
- document.getElementById('riskPercent').textContent=d.riskPct+'%';
- document.getElementById('gasText').textContent=d.gasS;
- document.getElementById('tempText').textContent=d.tempPct>=70?'HIGH':d.tempPct>=55?'MONITOR':'NORMAL';
- document.getElementById('humText').textContent=d.humPct>=80?'HIGH':d.humPct>=70?'MONITOR':'SAFE';
- ['risk','gasStatus','workerStatus','comm'].forEach(id=>{let e=document.getElementById(id);e.className=d.cls});
- document.getElementById('gasStatus').textContent=d.gasS+' · '+d.gasPct+'%';
- document.getElementById('obstacle').textContent=d.obs;
- document.getElementById('workerStatus').textContent=d.worker;
- document.getElementById('comm').textContent=d.comm;
- document.getElementById('zone').textContent='ZONE '+z;
- document.getElementById('zone2').textContent='ZONE '+z;
- const a=document.getElementById('alert');a.className='alert '+(d.cls==='danger'?'d':d.cls==='warn'?'w':'');a.innerHTML='<b>'+d.msg+'</b>';
- document.getElementById('worker').style.display=d.worker==='YES'?'block':'none';
-}
-function place(clientX,clientY){
- const m=map.getBoundingClientRect(), rw=rover.offsetWidth, rh=rover.offsetHeight;
- let x=clientX-m.left-rw/2, y=clientY-m.top-rh/2;
- x=Math.max(0,Math.min(m.width-rw,x));y=Math.max(0,Math.min(m.height-rh,y));
- rover.style.left=x+'px';rover.style.top=y+'px';
- const z=zoneFromPosition(); if(z!==lastZone) applyZone(z);
- battery=Math.max(0,battery-0.01);document.getElementById('battery').textContent=battery.toFixed(0)+' %';
-}
-rover.addEventListener('mousedown',e=>{dragging=true;e.preventDefault()});
-document.addEventListener('mouseup',()=>dragging=false);
-document.addEventListener('mousemove',e=>{if(dragging)place(e.clientX,e.clientY)});
-rover.addEventListener('touchstart',e=>{dragging=true;e.preventDefault()},{passive:false});
-document.addEventListener('touchend',()=>dragging=false);
-document.addEventListener('touchmove',e=>{if(dragging){let t=e.touches[0];place(t.clientX,t.clientY)}},{passive:false});
-map.addEventListener('click',e=>{if(e.target!==rover)place(e.clientX,e.clientY)});
-applyZone('A');
-</script>
-</body>
-</html>
+<div class="sensor-grid">
+
+  <!-- GAS -->
+
+  <div class="card">
+
+    <div class="card-title">
+      CO / GAS LEVEL
+    </div>
+
+    <div
+      class="value"
+      id="gasValue"
+    >
+      0%
+    </div>
+
+    <div
+      class="card-status"
+      id="gasStatus"
+    >
+      SAFE
+    </div>
+
+  </div>
+
+  <!-- TEMPERATURE -->
+
+  <div class="card">
+
+    <div class="card-title">
+      TEMPERATURE
+    </div>
+
+    <div class="value">
+
+      <span id="temperature">
+        0.0
+      </span>
+
+      °C
+
+    </div>
+
+    <div class="card-status">
+      DHT11 Environmental Sensor
+    </div>
+
+  </div>
+
+  <!-- HUMIDITY -->
+
+  <div class="card">
+
+    <div class="card-title">
+      HUMIDITY
+    </div>
+
+    <div class="value">
+
+      <span id="humidity">
+        0.0
+      </span>
+
+      %
+
+    </div>
+
+    <div class="card-status">
+      DHT11 Environmental Sensor
+    </div>
+
+  </div>
+
+  <!-- DISTANCE -->
+
+  <div class="card">
+
+    <div class="card-title">
+      OBSTACLE DISTANCE
+    </div>
+
+    <div
+      class="value"
+      id="distance"
+    >
+      N/A
+    </div>
+
+    <div
+      class="card-status"
+      id="distanceStatus"
+    >
+      Distance unavailable
+    </div>
+
+  </div>
+
+  <!-- WATER -->
+
+  <div class="card">
+
+    <div class="card-title">
+      WATER / MOISTURE
+    </div>
+
+    <div class="value">
+
+      <span id="water">
+        0
+      </span>
+
+      %
+
+    </div>
+
+    <div
+      class="card-status"
+      id="waterStatus"
+    >
+      NORMAL
+    </div>
+
+  </div>
+
+  <!-- IR -->
+
+  <div class="card">
+
+    <div class="card-title">
+      IR DETECTION
+    </div>
+
+    <div
+      class="value"
+      id="ir"
+    >
+      CLEAR
+    </div>
+
+    <div class="card-status">
+      Obstacle Detection Sensor
+    </div>
+
+  </div>
+
+  <!-- MPU X -->
+
+  <div class="card">
+
+    <div class="card-title">
+      MPU6050 - X
+    </div>
+
+    <div
+      class="value"
+      id="accelX"
+    >
+      0.00
+    </div>
+
+    <div class="card-status">
+      Acceleration m/s2
+    </div>
+
+  </div>
+
+  <!-- MPU Y -->
+
+  <div class="card">
+
+    <div class="card-title">
+      MPU6050 - Y
+    </div>
+
+    <div
+      class="value"
+      id="accelY"
+    >
+      0.00
+    </div>
+
+    <div class="card-status">
+      Acceleration m/s2
+    </div>
+
+  </div>
+
+  <!-- MPU Z -->
+
+  <div class="card">
+
+    <div class="card-title">
+      MPU6050 - Z
+    </div>
+
+    <div
+      class="value"
+      id="accelZ"
+    >
+      0.00
+    </div>
+
+    <div class="card-status">
+      Acceleration m/s2
+    </div>
+
+  </div>
+
+  <!-- BUZZER -->
+
+  <div class="card">
+
+    <div class="card-title">
+      DANGER BUZZER
+    </div>
+
+    <div
+      class="value"
+      id="buzzer"
+    >
+      OFF
+    </div>
+
+    <div class="card-status">
+      Automatic Safety Alarm
+    </div>
+
+  </div>
+
+  <!-- RELAY -->
+
+  <div class="card">
+
+    <div class="card-title">
+      RELAY
+    </div>
+
+    <div
+      class="value"
+      id="relay"
+    >
+      OFF
+    </div>
+
+    <div class="card-status">
+      Relay Control
+    </div>
+
+  </div>
+
+  <!-- ROVER STATUS -->
+
+  <div class="card">
+
+    <div class="card-title">
+      ROVER STATUS
+    </div>
+
+    <div
+      class="value"
+      id="rover"
+    >
+      STOPPED
+    </div>
+
+    <div class="card-status">
+      L298N Motor Driver
+    </div>
+
+  </div>
+
+</div>
+
+<!-- ================================================= -->
+<!-- SAFETY STATUS -->
+<!-- ================================================= -->
+
+<div class="section-title">
+Safety Status
+</div>
+
+<div
+  id="alertBox"
+  class="alert-card"
+>
+  SYSTEM NORMAL
+</div>
+
+<!-- ================================================= -->
+<!-- ROVER CONTROL -->
+<!-- ================================================= -->
+
+<div class="section-title">
+Rover Control
+</div>
+
+<div class="control-card">
+
+  <div>
+    Manual Rover Control
+  </div>
+
+  <div class="controls">
+
+    <div></div>
+
+    <button
+      onclick="control('forward')"
+    >
+      FORWARD
+    </button>
+
+    <div></div>
+
+    <button
+      onclick="control('left')"
+    >
+      LEFT
+    </button>
+
+    <button
+      class="stop"
+      onclick="control('stop')"
+    >
+      STOP
+    </button>
+
+    <button
+      onclick="control('right')"
+    >
+      RIGHT
+    </button>
+
+    <div></div>
+
+    <button
+      onclick="control('backward')"
+    >
+      BACKWARD
+    </button>
+
+    <div></div>
+
+  </div>
+
+  <button
+    class="relay-btn"
+    onclick="control('relay')"
+  >
+    RELAY ON / OFF
+  </button>
+
+</div>
+
+<!-- =============================
